@@ -179,8 +179,8 @@ extension CurvePreset {
 
     public static let boost = CurvePreset(
         name: "boost",
-        summary: "Engages at 40°C; max by 75°C. Good for sustained load.",
-        curve: FanCurve([(40, 2500), (75, 6800)]),
+        summary: "Engages at 40°C; max by 65°C. Pre-empts spikes under load.",
+        curve: FanCurve([(40, 2500), (65, 6800)]),
         sensor: .cpu
     )
 
@@ -191,7 +191,27 @@ extension CurvePreset {
         sensor: .cpu
     )
 
-    public static let all: [CurvePreset] = [.whisper, .quiet, .balanced, .boost, .fullBlast]
+    /// User-tunable curve. Six fixed-X breakpoints (30…80°C at 10°C steps)
+    /// so the menu bar's drag editor can offer a stable grid. Defaults to a
+    /// 3500-RPM-baseline palm-rest comfort profile that ramps hard past
+    /// 60°C; the app persists user edits in UserDefaults and sends them
+    /// over XPC via `applyCurve(_:sensor:)`, so this struct is only the
+    /// fallback if the user has never edited the curve.
+    public static let manual = CurvePreset(
+        name: "manual",
+        summary: "Custom curve (drag the points to edit).",
+        curve: FanCurve([
+            (30, 3500),
+            (40, 3700),
+            (50, 4000),
+            (60, 4800),
+            (70, 5800),
+            (80, 6800),
+        ]),
+        sensor: .cpu
+    )
+
+    public static let all: [CurvePreset] = [.whisper, .quiet, .balanced, .boost, .fullBlast, .manual]
 
     public static func byName(_ n: String) -> CurvePreset? {
         all.first { $0.name == n.lowercased() }

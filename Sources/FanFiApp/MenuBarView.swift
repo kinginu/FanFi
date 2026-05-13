@@ -51,6 +51,10 @@ struct MenuBarView: View {
                 temperatureSection
                 Divider()
                 fanSection
+                if let curveView = curveSection {
+                    Divider()
+                    curveView
+                }
                 if monitor.tempHistory.count > 4 {
                     Divider()
                     chartsSection
@@ -206,6 +210,153 @@ struct MenuBarView: View {
                 }
             }
         }
+    }
+
+    /// Renders the active fan curve below the Fans tile. When the Manual
+    /// preset is active, each breakpoint is shown as a draggable handle so
+    /// the user can adjust RPM in real time. Otherwise the chart is read-only.
+    private var curveSection: (some View)? {
+        let isManualActive = presets.active == .manual
+        let curve: FanCurve
+        let shorthand: String
+
+        if isManualActive {
+            curve = presets.manualCurve
+            shorthand = curve.shorthand
+        } else if let s = presets.helperSnapshot?.activeCurveShorthand,
+                  let parsed = try? FanCurve.parse(s) {
+            curve = parsed
+            shorthand = s
+        } else {
+            return nil as AnyView?
+        }
+
+        let preset = presets.helperSnapshot?.activePreset.flatMap { CurvePreset.byName($0) }
+        let sensor = isManualActive ? .cpu : (preset?.sensor ?? .cpu)
+        let keys = Set(sensor.candidateKeys)
+        let nowTemp = monitor.temps.filter { keys.contains($0.key) }
+            .map { $0.celsius }
+            .max()
+        let nowRpm = nowTemp.map { curve.rpm(at: $0) }
+
+        let xRange: ClosedRange<Float> = {
+            let lo = (curve.points.first?.tempC ?? 0) - 5
+            let hi = (curve.points.last?.tempC ?? 100) + 5
+            return lo...hi
+        }()
+
+        return AnyView(VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                sectionHeader(isManualActive ? "Curve (drag to edit)" : "Curve")
+                Spacer()
+                Text(shorthand)
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            Chart {
+                ForEach(Array(curve.points.enumerated()), id: \.offset) { _, p in
+                    LineMark(
+                        x: .value("temp", p.tempC),
+                        y: .value("rpm", p.rpm)
+                    )
+                    .foregroundStyle(.purple)
+                    .interpolationMethod(.linear)
+                    if !isManualActive {
+                        PointMark(
+                            x: .value("temp", p.tempC),
+                            y: .value("rpm", p.rpm)
+                        )
+                        .foregroundStyle(.purple.opacity(0.6))
+                        .symbolSize(20)
+                    }
+                }
+                if let t = nowTemp, let r = nowRpm {
+                    PointMark(
+                        x: .value("now temp", t),
+                        y: .value("now rpm", r)
+                    )
+                    .foregroundStyle(.red)
+                    .symbolSize(60)
+                    .annotation(position: .top, alignment: .center, spacing: 2) {
+                        Text(String(format: "%.0f°  %.0f", t, r))
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .chartXScale(domain: Double(xRange.lowerBound)...Double(xRange.upperBound))
+            .chartYScale(domain: 0...7000)
+            .chartXAxis {
+                AxisMarks(values: .stride(by: 10)) { value in
+                    AxisGridLine().foregroundStyle(Color.gray.opacity(0.35))
+                    AxisTick().foregroundStyle(Color.gray.opacity(0.5))
+                    AxisValueLabel {
+                        if let v = value.as(Int.self) {
+                            Text("\(v)°").font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .chartYAxis {
+                AxisMarks(position: .leading, values: .stride(by: 2000)) { value in
+                    AxisGridLine().foregroundStyle(Color.gray.opacity(0.2))
+                    AxisValueLabel {
+                        if let v = value.as(Int.self) {
+                            Text("\(v/1000)k").font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .chartOverlay { proxy in
+                if isManualActive {
+                    manualDragOverlay(proxy: proxy)
+                }
+            }
+            .frame(height: 100)
+        })
+    }
+
+    /// Draggable handles, one per Manual-curve breakpoint. X is fixed; only
+    /// Y (RPM) can be dragged.
+    ///
+    /// We use `value.location` against a named coordinate space rather than
+    /// `value.translation`, because the curve is updated live during the
+    /// drag — that re-renders the handles with a new `yInPlot`, and
+    /// translation-based math would double-count the delta on every frame.
+    /// Location is the cursor's absolute Y in our overlay's space, so the
+    /// handle tracks the cursor regardless of how many re-renders happen.
+    @ViewBuilder
+    private func manualDragOverlay(proxy: ChartProxy) -> some View {
+        GeometryReader { geo in
+            let plotFrame = proxy.plotFrame.map { geo[$0] } ?? .zero
+            ForEach(presets.manualCurve.points.indices, id: \.self) { i in
+                let p = presets.manualCurve.points[i]
+                let xInPlot = proxy.position(forX: p.tempC) ?? 0
+                let yInPlot = proxy.position(forY: p.rpm) ?? 0
+
+                Circle()
+                    .fill(.purple)
+                    .overlay(Circle().stroke(.white, lineWidth: 2))
+                    .frame(width: 16, height: 16)
+                    .shadow(color: .black.opacity(0.25), radius: 1, y: 1)
+                    .position(
+                        x: plotFrame.origin.x + xInPlot,
+                        y: plotFrame.origin.y + yInPlot
+                    )
+                    .gesture(
+                        DragGesture(minimumDistance: 0, coordinateSpace: .named("manualOverlay"))
+                            .onChanged { value in
+                                let yInPlotAbsolute = value.location.y - plotFrame.origin.y
+                                if let newRpm = proxy.value(atY: yInPlotAbsolute, as: Double.self) {
+                                    presets.setManualRPM(at: i, rpm: Float(newRpm))
+                                }
+                            }
+                    )
+            }
+        }
+        .coordinateSpace(name: "manualOverlay")
     }
 
     private var fanSection: some View {
