@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.fanfi.helper</string>
+
+    <!-- Path relative to the app bundle. SMAppService resolves this at
+         registration time to the real on-disk location of FanFi.app, so the
+         daemon plist works regardless of where the user puts the bundle
+         (Applications, ~/Applications, dev tree). -->
+    <key>BundleProgram</key>
+    <string>Contents/MacOS/FanFiHelper</string>
+
+    <key>MachServices</key>
+    <dict>
+        <key>com.fanfi.helper</key>
+        <true/>
+    </dict>
+
+    <!-- On-demand: launchd spawns the helper only when something connects to
+         the mach service. KeepAlive false so the helper can exit cleanly if
+         we ever ask it to. -->
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/fanfi-helper.log</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/fanfi-helper.log</string>
+</dict>
+</plist>

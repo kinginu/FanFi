@@ -1,0 +1,26 @@
+# Local-only private docs (symlink target)
+.private-docs
+
+# SwiftPM
+.build/
+.swiftpm/
+Packages/
+Package.pins
+
+# Phase 3 app bundle (assembled by Scripts/build-app.sh from .build/release)
+FanFiApp.app/
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp

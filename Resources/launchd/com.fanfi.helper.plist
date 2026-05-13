@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.fanfi.helper</string>
+
+    <!-- launchd registers this mach name on our behalf. -->
+    <key>MachServices</key>
+    <dict>
+        <key>com.fanfi.helper</key>
+        <true/>
+    </dict>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/inu/work/FanFi/.build/release/FanFiHelper</string>
+    </array>
+
+    <!-- Don't start until something connects to the mach service. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- Don't auto-restart on crash during dev so we notice. -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/fanfi-helper.log</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/fanfi-helper.log</string>
+</dict>
+</plist>
