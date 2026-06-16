@@ -95,8 +95,14 @@ public enum CurveParseError: Error, CustomStringConvertible, Sendable {
 // exposes the same enumeration.
 
 public enum SensorSource: Codable, Hashable, Sendable {
-    /// Hottest of the P-core sensors (Tp01/Tp05/Tp09/Tp0D/Tp0X/Tp0b).
-    /// Best proxy for sustained CPU load.
+    /// Hottest CPU-core sensor. The control loop takes the *max* over the
+    /// `Tp*` core cluster so the curve reacts to the hottest core under load.
+    ///
+    /// Note: Apple Silicon exposes redundant per-core sensors that power-gate
+    /// to ~0-8 °C when their core is parked — `readMaxTemp`'s 10 °C floor
+    /// filters those out so the max lands on a live core. (The earlier list,
+    /// `Tp01/05/09/0D/0X/0b`, happened to be exactly the gate-prone sub-keys,
+    /// so curves often saw a phantom-cold CPU and never ramped.)
     case cpu
     /// Hottest of ambient/chassis sensors (TaLP/TaRF). Best proxy for
     /// palm-rest temperature on MacBook Pro chassis.
@@ -108,15 +114,23 @@ public enum SensorSource: Codable, Hashable, Sendable {
 
     public var candidateKeys: [String] {
         switch self {
-        case .cpu:     return ["Tp01", "Tp05", "Tp09", "Tp0D", "Tp0X", "Tp0b"]
+        case .cpu:
+            // Broad P/E-core sensor set (M2 Pro, Mac14,9). Max-aggregated, so
+            // gated-low duplicates are harmless; the live cores win.
+            return [
+                "Tp01", "Tp02", "Tp05", "Tp06", "Tp09", "Tp0A",
+                "Tp0D", "Tp0E", "Tp0X", "Tp0Y", "Tp0b", "Tp0c",
+                "Tp0f", "Tp0g", "Tp0j", "Tp0k",
+                "Tp1A", "Tp1E", "Tp1I", "Tp1M",
+                "Tp1h", "Tp1l", "Tp1p", "Tp1t",
+            ]
         case .ambient: return ["TaLP", "TaRF"]
         case .hottest:
             return [
-                "TC0P", "TC0E", "TC0F",
-                "TG0P", "TG0D",
-                "Th0H", "Th1H", "Th2H",
-                "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0X", "Tp0b",
-                "TaLP", "TaRF",
+                "Tp02", "Tp0A", "Tp0Y",         // hot CPU cores
+                "Tg0X", "Tg0f", "Tg0j",         // GPU cluster
+                "Th0H", "Th0I",                 // heatpipe
+                "TaLP", "TaRF",                 // chassis ambient
             ]
         case .keys(let ks): return ks
         }

@@ -37,6 +37,44 @@ public struct TempReading: Sendable, Hashable {
     }
 }
 
+/// A human-named temperature aggregated from one or more raw SMC keys.
+/// `sampleCount` is how many of the group's keys were in-band this read — a
+/// CPU group on Apple Silicon exposes dozens of redundant per-core sensors,
+/// half of which power-gate to ~0 °C at any instant, so the count fluctuates.
+public struct NamedTemp: Sendable, Hashable {
+    public let name: String
+    public let celsius: Float
+    public let sampleCount: Int
+
+    public init(name: String, celsius: Float, sampleCount: Int) {
+        self.name = name
+        self.celsius = celsius
+        self.sampleCount = sampleCount
+    }
+}
+
+/// A curated display sensor: a friendly name and the SMC keys it averages.
+/// CPU/GPU key lists are discovered per-chip at runtime (see
+/// `FanController.displaySensorGroups()`); the rest are fixed, high-confidence
+/// keys verified against Mac Fan Control on M2 Pro (Mac14,9).
+public struct SensorGroup: Sendable, Hashable {
+    public let name: String
+    public let keys: [String]
+    /// When true, average only readings within `hotClusterBand` °C of the
+    /// group's hottest sensor. Apple exposes two sensors per GPU core (a ~39 °C
+    /// and a ~45 °C probe); a plain mean lands between them, ~4 °C below what
+    /// Mac Fan Control reports for "GPU Cluster". Biasing to the hot cluster
+    /// matches MFC and is still stable. CPU cores don't need this — their full
+    /// mean already equals MFC's "CPU Core Average".
+    public let hotClusterOnly: Bool
+
+    public init(name: String, keys: [String], hotClusterOnly: Bool = false) {
+        self.name = name
+        self.keys = keys
+        self.hotClusterOnly = hotClusterOnly
+    }
+}
+
 /// Hardware-specific key configuration probed at startup.
 /// On M-series chips the mode key casing differs (F%dmd vs F%dMd), and
 /// Ftst may or may not be exposed.
@@ -120,13 +158,71 @@ public final class FanController {
 
     /// Maximum reading among the source's candidate keys. Returns nil if no
     /// sensor returns a plausible value.
+    ///
+    /// Band starts at 10 °C, not 5: Apple-Silicon per-core sensors pin to
+    /// ~0-8 °C when the core is power-gated. `> 5` used to let those through
+    /// and made curves evaluate against a phantom-cold CPU.
     public func readMaxTemp(source: SensorSource) -> (key: String, celsius: Float)? {
         var best: (String, Float)?
         for key in source.candidateKeys {
-            guard let t = try? smc.readFloat32(key), t > 5, t < 150 else { continue }
+            guard let t = try? smc.readFloat32(key), t > 10, t < 150 else { continue }
             if best == nil || t > best!.1 { best = (key, t) }
         }
         return best
+    }
+
+    // MARK: - Named display sensors
+
+    /// Build the curated, friendly-named sensor groups for the popover /
+    /// menu bar. Enumerates SMC keys once to discover this chip's CPU-core
+    /// (`Tp*`) and GPU (`Tg*`) sensors — these differ by generation, so we
+    /// resolve them at runtime rather than hard-coding an M2-specific list.
+    /// Call once at startup; it's a full ~2300-key scan.
+    public func displaySensorGroups() -> [SensorGroup] {
+        let all = smc.enumerateKeys()
+        // Lowercase 'p'/'g' is deliberate: it selects the per-core CPU and GPU
+        // cluster sensors while excluding unrelated families like `TPMP`/`TPSP`
+        // (PMIC) and `TG0D` (GPU proximity, uppercase).
+        let cpu = all.filter { $0.hasPrefix("Tp") }.sorted()
+        let gpu = all.filter { $0.hasPrefix("Tg") }.sorted()
+        var groups: [SensorGroup] = []
+        if !cpu.isEmpty { groups.append(SensorGroup(name: "CPU", keys: cpu)) }
+        if !gpu.isEmpty { groups.append(SensorGroup(name: "GPU", keys: gpu, hotClusterOnly: true)) }
+        groups.append(SensorGroup(name: "Airflow L", keys: ["TaLP"]))
+        groups.append(SensorGroup(name: "Airflow R", keys: ["TaRF"]))
+        groups.append(SensorGroup(name: "Battery",   keys: ["TB0T", "TB1T", "TB2T"]))
+        groups.append(SensorGroup(name: "Airport",   keys: ["TW0P"]))
+        return groups
+    }
+
+    private static let hotClusterBand: Float = 5
+
+    /// Mean of a group's in-band readings. Excludes power-gated cores that pin
+    /// near 0 °C (band starts at 10 °C). When `hotClusterOnly`, first drops
+    /// readings more than `hotClusterBand` °C below the group max (used for GPU,
+    /// where each core exposes a hot + cold probe). Returns nil if nothing is
+    /// in band.
+    public func averageTemp(keys: [String],
+                            band: ClosedRange<Float> = 10...120,
+                            hotClusterOnly: Bool = false) -> (celsius: Float, count: Int)? {
+        var vals: [Float] = []
+        for k in keys {
+            if let t = try? smc.readFloat32(k), band.contains(t) { vals.append(t) }
+        }
+        if hotClusterOnly, let hi = vals.max() {
+            vals = vals.filter { $0 >= hi - Self.hotClusterBand }
+        }
+        guard !vals.isEmpty else { return nil }
+        return (vals.reduce(0, +) / Float(vals.count), vals.count)
+    }
+
+    /// Averaged readings for the given groups, in order. Groups with no in-band
+    /// sensor this tick are dropped.
+    public func namedTemperatures(_ groups: [SensorGroup]) -> [NamedTemp] {
+        groups.compactMap { g in
+            guard let r = averageTemp(keys: g.keys, hotClusterOnly: g.hotClusterOnly) else { return nil }
+            return NamedTemp(name: g.name, celsius: r.celsius, sampleCount: r.count)
+        }
     }
 
     // MARK: - Write / unlock

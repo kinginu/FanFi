@@ -408,12 +408,52 @@ struct KeysCommand: ParsableCommand {
     @Option(name: .long, help: "Substring filter (case-sensitive).")
     var filter: String?
 
+    @Flag(name: .long, help: "Also read each key's size, type, raw bytes, and decoded float/sp78/ioft value.")
+    var values = false
+
     func run() throws {
         let smc = try SMC()
         let keys = smc.enumerateKeys()
         let filtered = filter.map { f in keys.filter { $0.contains(f) } } ?? keys
-        for k in filtered { print(k) }
+        for k in filtered {
+            if values {
+                print(decodeLine(smc, k))
+            } else {
+                print(k)
+            }
+        }
         FileHandle.standardError.write(Data("total: \(keys.count), shown: \(filtered.count)\n".utf8))
+    }
+
+    /// "key  size  type  rawhex  flt=.. sp78=.. ioft=.." — for sensor mapping.
+    private func decodeLine(_ smc: SMC, _ key: String) -> String {
+        guard let info = try? smc.keyInfo(key), let raw = try? smc.read(key) else {
+            return "\(key)  <unreadable>"
+        }
+        let typeStr = fourCCString(info.type)
+        let hex = raw.map { String(format: "%02x", $0) }.joined()
+        var decs: [String] = []
+        if raw.count >= 4 {
+            let f = raw.withUnsafeBytes { $0.loadUnaligned(as: Float.self) }
+            decs.append(String(format: "flt=%.2f", f))
+        }
+        if raw.count >= 2 {
+            // sp78: signed 8.8 fixed point, big-endian.
+            let i = Int16(bitPattern: (UInt16(raw[0]) << 8) | UInt16(raw[1]))
+            decs.append(String(format: "sp78=%.2f", Float(i) / 256.0))
+            // ioft: unsigned fixed point, big-endian, fractional bits = (size*8 - intbits).
+            // Apple Silicon temps commonly use ioft with 16 fractional bits over 4 bytes,
+            // but 2-byte variants exist; show the 8.8 reading as a probe.
+            let u = (UInt16(raw[0]) << 8) | UInt16(raw[1])
+            decs.append(String(format: "u8.8=%.2f", Float(u) / 256.0))
+        }
+        return "\(key)  size=\(info.size)  type=\(typeStr)  raw=\(hex)  \(decs.joined(separator: " "))"
+    }
+
+    private func fourCCString(_ v: UInt32) -> String {
+        let b: [UInt8] = [UInt8((v >> 24) & 0xFF), UInt8((v >> 16) & 0xFF),
+                          UInt8((v >> 8) & 0xFF), UInt8(v & 0xFF)]
+        return String(bytes: b, encoding: .ascii)?.replacingOccurrences(of: "\0", with: " ") ?? "????"
     }
 }
 

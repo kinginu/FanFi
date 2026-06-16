@@ -9,17 +9,43 @@ struct MenuBarLabel: View {
     @Bindable var monitor: StatusMonitor
 
     var body: some View {
-        HStack(spacing: 3) {
+        // MenuBarExtra renders its label through the OS, which ignores SwiftUI
+        // layout/font modifiers (.frame, .font, .monospacedDigit are no-ops)
+        // and drops all but the first subview — that's why the chip width
+        // wobbled between 41/42 and why a separate "℃" Text vanished. Apple's
+        // recommended workaround is to rasterise the label ourselves: inside
+        // ImageRenderer those modifiers DO apply, so we bake the whole chip
+        // into one fixed-width template image and hand that to the OS.
+        Image(nsImage: rendered)
+    }
+
+    /// The chip (icon + "NN℃") rendered to a template NSImage. `monospacedDigit`
+    /// and the fixed-width digit box are honoured here, so every 2-digit value
+    /// produces an identical-width image and the menu bar never reflows.
+    @MainActor private var rendered: NSImage {
+        let content = HStack(alignment: .center, spacing: 3) {
             Image(systemName: iconName)
-            if let t = monitor.hottestSensor {
-                Text("\(Int(t.celsius.rounded()))°")
-                    .monospacedDigit()
+            if let t = monitor.menuBarTemp {
+                HStack(spacing: 0) {
+                    Text("\(Int(t.rounded()))")
+                        .monospacedDigit()
+                        .frame(width: 19, alignment: .trailing)
+                    Text("℃")
+                }
             }
         }
+        .font(.system(size: 13))
+        .foregroundStyle(.black)   // template image tints to the menu bar
+
+        let renderer = ImageRenderer(content: content)
+        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        guard let img = renderer.nsImage else { return NSImage() }
+        img.isTemplate = true
+        return img
     }
 
     private var iconName: String {
-        guard let t = monitor.hottestSensor?.celsius else { return "fan" }
+        guard let t = monitor.menuBarTemp else { return "fan" }
         switch t {
         case ..<55: return "fan"
         case ..<75: return "fan.fill"
@@ -199,12 +225,11 @@ struct MenuBarView: View {
     private var temperatureSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             sectionHeader("Temperatures")
-            ForEach(monitor.temps.sorted { $0.celsius > $1.celsius }.prefix(6), id: \.key) { t in
+            ForEach(monitor.displayTemps, id: \.name) { t in
                 HStack {
-                    Text(t.key)
-                        .font(.system(.body, design: .monospaced))
+                    Text(t.name)
                     Spacer()
-                    Text(String(format: "%.1f °C", t.celsius))
+                    Text(String(format: "%.1f ℃", t.celsius))
                         .monospacedDigit()
                         .foregroundStyle(tempColor(t.celsius))
                 }
@@ -233,10 +258,17 @@ struct MenuBarView: View {
 
         let preset = presets.helperSnapshot?.activePreset.flatMap { CurvePreset.byName($0) }
         let sensor = isManualActive ? .cpu : (preset?.sensor ?? .cpu)
-        let keys = Set(sensor.candidateKeys)
-        let nowTemp = monitor.temps.filter { keys.contains($0.key) }
-            .map { $0.celsius }
-            .max()
+        // For CPU-driven curves show the same averaged value as the menu bar;
+        // for ambient/explicit sources fall back to the hottest raw key.
+        let nowTemp: Float?
+        if sensor == .cpu {
+            nowTemp = monitor.cpuTemp
+        } else {
+            let keys = Set(sensor.candidateKeys)
+            nowTemp = monitor.temps.filter { keys.contains($0.key) }
+                .map { $0.celsius }
+                .max()
+        }
         let nowRpm = nowTemp.map { curve.rpm(at: $0) }
 
         let xRange: ClosedRange<Float> = {
